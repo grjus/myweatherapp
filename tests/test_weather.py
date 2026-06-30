@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
+import main as main_module
 from i18n import month_name, t, weather_description
 from main import trend_chart
 from weather import (
@@ -47,23 +48,40 @@ def test_polish_translations_are_used_in_chart_and_weather_labels() -> None:
 
 
 def test_language_is_initialized_from_url_and_mirrored_after_selection() -> None:
+    original_search = main_module.cached_location_search
     source = (
         "import main\n"
         "main.cached_location_search = lambda query, language: []\n"
         "main.app()"
     )
-    app = AppTest.from_string(source)
-    app.query_params["lang"] = "pl"
+    try:
+        app = AppTest.from_string(source)
+        app.query_params["lang"] = "pl"
 
-    app.run()
+        app.run()
 
-    assert app.title[0].value == "Historyczne trendy pogodowe"
-    assert app.segmented_control[0].value == "PL"
+        assert app.title[0].value == "Historyczne trendy pogodowe"
+        assert app.segmented_control[0].value == "PL"
 
-    app.segmented_control[0].set_value("EN").run()
+        app.segmented_control[0].set_value("EN").run()
 
-    assert app.title[0].value == "Historical Weather Trends"
-    assert app.query_params["lang"] == ["en"]
+        assert app.title[0].value == "Historical Weather Trends"
+        assert app.query_params["lang"] == ["en"]
+    finally:
+        main_module.cached_location_search = original_search
+
+
+def test_cached_location_search_supports_legacy_search_signature(monkeypatch) -> None:
+    expected = [main_module.Location("Warsaw", 52.2298, 21.0118)]
+
+    def legacy_search(query: str):
+        assert query == "Warsaw"
+        return expected
+
+    monkeypatch.setattr(main_module, "search_locations", legacy_search)
+    main_module.cached_location_search.clear()
+
+    assert main_module.cached_location_search("Warsaw", "pl") == expected
 
 
 def mock_client(handler) -> httpx.Client:

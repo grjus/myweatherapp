@@ -44,7 +44,10 @@ def aggregate_temperature(
 
 @st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
 def cached_location_search(query: str, language: str) -> list[Location]:
-    return search_locations(query, language=language)
+    parameters = inspect.signature(search_locations).parameters
+    if "language" in parameters:
+        return search_locations(query, language=language)
+    return search_locations(query)
 
 
 @st.cache_data(ttl=10 * 60, max_entries=500, show_spinner=False)
