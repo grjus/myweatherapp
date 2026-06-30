@@ -5,7 +5,9 @@ from datetime import date
 import httpx
 import pandas as pd
 import pytest
+from streamlit.testing.v1 import AppTest
 
+from i18n import month_name, t, weather_description
 from main import trend_chart
 from weather import (
     WeatherApiError,
@@ -28,6 +30,40 @@ def test_trend_chart_labels_observed_temperature_measure(temperature_label: str)
     figure = trend_chart(frame, "Annual", temperature_label)
 
     assert figure.data[0].name == f"Observed {temperature_label.lower()}"
+
+
+def test_polish_translations_are_used_in_chart_and_weather_labels() -> None:
+    frame = pd.DataFrame(
+        {"year": [2000], "temperature": [10.0], "fitted_temperature": [10.0]}
+    )
+
+    figure = trend_chart(frame, "Rocznie", "średnia", "PL")
+
+    assert figure.data[0].name == "Obserwowana temperatura średnia"
+    assert figure.layout.xaxis.title.text == "Rok"
+    assert month_name("PL", 5) == "Maj"
+    assert weather_description("PL", 2) == "Częściowe zachmurzenie"
+    assert t("humidity", "PL") == "Wilgotność"
+
+
+def test_language_is_initialized_from_url_and_mirrored_after_selection() -> None:
+    source = (
+        "import main\n"
+        "main.cached_location_search = lambda query, language: []\n"
+        "main.app()"
+    )
+    app = AppTest.from_string(source)
+    app.query_params["lang"] = "pl"
+
+    app.run()
+
+    assert app.title[0].value == "Historyczne trendy pogodowe"
+    assert app.segmented_control[0].value == "PL"
+
+    app.segmented_control[0].set_value("EN").run()
+
+    assert app.title[0].value == "Historical Weather Trends"
+    assert app.query_params["lang"] == ["en"]
 
 
 def mock_client(handler) -> httpx.Client:
@@ -93,7 +129,7 @@ def test_fetch_current_weather_builds_query_and_normalizes_conditions() -> None:
 
     assert current.temperature == pytest.approx(24.3)
     assert current.relative_humidity == 58
-    assert current.description == "Partly cloudy"
+    assert weather_description("EN", current.weather_code) == "Partly cloudy"
     assert current.is_day is True
     assert current.timezone == "Europe/Warsaw"
 

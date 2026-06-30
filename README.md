@@ -17,7 +17,9 @@ Then open the local URL printed by Streamlit. Search for a city or postal code, 
 directly. Choose ERA5-Land for finer-resolution land data since 1950, or ERA5 for global data since
 1940. Select mean, peak maximum, or lowest minimum temperature and an annual or calendar-month
 analysis. The dashboard also shows current temperature, apparent temperature, humidity, wind, and
-weather conditions for the selected location.
+weather conditions for the selected location. Use the header control to switch between English and
+Polish; the selection is retained in the session and reflected in the shareable `?lang=en` or
+`?lang=pl` URL parameter. Translation catalogs are stored in `locales/`.
 
 ## What the dashboard calculates
 

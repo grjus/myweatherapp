@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import calendar
 import importlib
 import inspect
 from datetime import date
+from typing import cast
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import weather as weather_module
 
+from i18n import Language, SUPPORTED_LANGUAGES, month_name, t, weather_description
 from weather import (
     BASELINE_END,
     BASELINE_START,
@@ -42,8 +43,8 @@ def aggregate_temperature(
 
 
 @st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
-def cached_location_search(query: str) -> list[Location]:
-    return search_locations(query)
+def cached_location_search(query: str, language: str) -> list[Location]:
+    return search_locations(query, language=language)
 
 
 @st.cache_data(ttl=10 * 60, max_entries=500, show_spinner=False)
@@ -62,14 +63,48 @@ def cached_weather(
     return fetch_daily_weather(latitude, longitude, start_date, end_date, dataset)  # type: ignore[arg-type]
 
 
-def trend_chart(frame: pd.DataFrame, period_label: str, temperature_label: str) -> go.Figure:
+def initialize_language() -> Language:
+    """Initialize language once from the URL, then browser locale, then English."""
+    selected = st.session_state.get("language")
+    if selected in SUPPORTED_LANGUAGES:
+        return cast(Language, selected)
+
+    query_value = st.query_params.get("lang", "")
+    if isinstance(query_value, list):
+        query_value = query_value[-1] if query_value else ""
+    query_language = str(query_value).upper()
+    if query_language in SUPPORTED_LANGUAGES:
+        language = cast(Language, query_language)
+    else:
+        browser_locale = (getattr(st.context, "locale", None) or "").lower()
+        language = "PL" if browser_locale.startswith("pl") else "EN"
+    st.session_state["language"] = language
+    return language
+
+
+def mirror_language_to_url(language: Language) -> None:
+    """Keep the selected language shareable in the page URL."""
+    query_value = language.lower()
+    current_value = st.query_params.get("lang")
+    if isinstance(current_value, list):
+        current_value = current_value[-1] if current_value else None
+    if current_value != query_value:
+        st.query_params["lang"] = query_value
+
+
+def trend_chart(
+    frame: pd.DataFrame,
+    period_label: str,
+    temperature_label: str,
+    language: Language = "EN",
+) -> go.Figure:
     figure = go.Figure()
     figure.add_trace(
         go.Scatter(
             x=frame["year"],
             y=frame["temperature"],
             mode="lines+markers",
-            name=f"Observed {temperature_label.lower()}",
+            name=t("observed", language, measure=temperature_label.lower()),
             hovertemplate="%{x}: %{y:.2f} °C<extra></extra>",
         )
     )
@@ -78,15 +113,20 @@ def trend_chart(frame: pd.DataFrame, period_label: str, temperature_label: str) 
             x=frame["year"],
             y=frame["fitted_temperature"],
             mode="lines",
-            name="Linear trend",
+            name=t("linear_trend", language),
             line={"dash": "dash", "color": "#d62728"},
             hovertemplate="%{x}: %{y:.2f} °C<extra></extra>",
         )
     )
     figure.update_layout(
-        title=f"{period_label} {temperature_label.lower()} temperature by year",
-        xaxis_title="Year",
-        yaxis_title="Temperature (°C)",
+        title=t(
+            "trend_chart_title",
+            language,
+            period=period_label,
+            measure=temperature_label.lower(),
+        ),
+        xaxis_title=t("year", language),
+        yaxis_title=t("temperature_axis", language),
         hovermode="x unified",
         legend={"orientation": "h", "y": 1.08},
     )
@@ -94,7 +134,10 @@ def trend_chart(frame: pd.DataFrame, period_label: str, temperature_label: str) 
 
 
 def anomaly_chart(
-    frame: pd.DataFrame, period_label: str, temperature_label: str
+    frame: pd.DataFrame,
+    period_label: str,
+    temperature_label: str,
+    language: Language = "EN",
 ) -> go.Figure:
     colors = ["#d62728" if value >= 0 else "#1f77b4" for value in frame["anomaly"]]
     figure = go.Figure(
@@ -107,119 +150,186 @@ def anomaly_chart(
     )
     figure.add_hline(y=0, line_color="black", line_width=1)
     figure.update_layout(
-        title=(
-            f"{period_label} {temperature_label.lower()} temperature anomalies "
-            "from the 1991–2020 normal"
+        title=t(
+            "anomaly_chart_title",
+            language,
+            period=period_label,
+            measure=temperature_label.lower(),
         ),
-        xaxis_title="Year",
-        yaxis_title="Temperature anomaly (°C)",
+        xaxis_title=t("year", language),
+        yaxis_title=t("anomaly_axis", language),
     )
     return figure
 
 
-def daily_chart(frame: pd.DataFrame, year: int, month: int | None) -> go.Figure:
+def daily_chart(
+    frame: pd.DataFrame,
+    year: int,
+    month: int | None,
+    language: Language = "EN",
+) -> go.Figure:
     selected = frame[frame["date"].dt.year == year]
     if month is not None:
         selected = selected[selected["date"].dt.month == month]
     figure = go.Figure()
     for column, label, color in (
-        ("temperature_max", "Maximum", "#d62728"),
-        ("temperature_mean", "Mean", "#2ca02c"),
-        ("temperature_min", "Minimum", "#1f77b4"),
+        ("temperature_max", t("series_max", language), "#d62728"),
+        ("temperature_mean", t("series_mean", language), "#2ca02c"),
+        ("temperature_min", t("series_min", language), "#1f77b4"),
     ):
         figure.add_trace(
             go.Scatter(x=selected["date"], y=selected[column], name=label, line={"color": color})
         )
     figure.update_layout(
-        title=f"Daily temperatures in {year}",
-        xaxis_title="Date",
-        yaxis_title="Temperature (°C)",
+        title=t("daily_chart_title", language, year=year),
+        xaxis_title=t("date", language),
+        yaxis_title=t("temperature_axis", language),
         hovermode="x unified",
         legend={"orientation": "h", "y": 1.08},
     )
     return figure
 
 
-def resolve_location() -> Location | None:
-    st.sidebar.subheader("Location")
-    manual = st.sidebar.toggle("Enter coordinates manually")
+def resolve_location(language: Language) -> Location | None:
+    st.sidebar.subheader(t("location", language))
+    manual = st.sidebar.toggle(
+        t("manual_coordinates", language), key="manual_coordinates"
+    )
     if manual:
-        latitude = st.sidebar.number_input("Latitude", -90.0, 90.0, 52.2298, format="%.4f")
-        longitude = st.sidebar.number_input("Longitude", -180.0, 180.0, 21.0118, format="%.4f")
-        return Location("Custom location", latitude, longitude)
+        latitude = st.sidebar.number_input(
+            t("latitude", language),
+            -90.0,
+            90.0,
+            52.2298,
+            format="%.4f",
+            key="latitude",
+        )
+        longitude = st.sidebar.number_input(
+            t("longitude", language),
+            -180.0,
+            180.0,
+            21.0118,
+            format="%.4f",
+            key="longitude",
+        )
+        return Location(t("custom_location", language), latitude, longitude)
 
-    query = st.sidebar.text_input("City or postal code", value="Warsaw")
+    query = st.sidebar.text_input(
+        t("city_search", language),
+        value=t("default_location_query", language),
+        key="location_query",
+    )
     try:
-        results = cached_location_search(query) if len(query.strip()) >= 2 else []
-    except WeatherApiError as exc:
-        st.sidebar.error(str(exc))
+        api_language = "pl" if language == "PL" else "en"
+        results = (
+            cached_location_search(query, api_language) if len(query.strip()) >= 2 else []
+        )
+    except WeatherApiError:
+        st.sidebar.error(t("location_search_failed", language))
         return None
     if not results:
-        st.sidebar.warning("No matching location found.")
+        st.sidebar.warning(t("no_location", language))
         return None
-    return st.sidebar.selectbox("Matching location", results, format_func=lambda item: item.label)
+    return st.sidebar.selectbox(
+        t("matching_location", language),
+        results,
+        format_func=lambda item: item.label,
+        key="matching_location",
+    )
 
 
 def app() -> None:
-    st.set_page_config(page_title="Historical Weather Trends", page_icon="🌡️", layout="wide")
-    st.title("Historical Weather Trends")
-    st.caption("Explore long-term local temperature patterns using consistent reanalysis data.")
-
-    location = resolve_location()
-    st.sidebar.subheader("Analysis")
-    dataset_label = st.sidebar.selectbox(
-        "Dataset",
-        ("ERA5-Land (~11 km, 1950 onward)", "ERA5 (~25 km, 1940 onward)"),
+    language = initialize_language()
+    st.set_page_config(page_title=t("title", language), page_icon="🌡️", layout="wide")
+    title_column, language_column = st.columns([5, 1], vertical_alignment="center")
+    selected_language = language_column.segmented_control(
+        t("language", language),
+        SUPPORTED_LANGUAGES,
+        key="language",
+        width="stretch",
     )
-    dataset = "era5_land" if dataset_label.startswith("ERA5-Land") else "era5"
+    language = cast(Language, selected_language or language)
+    mirror_language_to_url(language)
+    title_column.title(t("title", language))
+    st.caption(t("subtitle", language))
+
+    location = resolve_location(language)
+    st.sidebar.subheader(t("analysis", language))
+    dataset = st.sidebar.selectbox(
+        t("dataset", language),
+        ("era5_land", "era5"),
+        format_func=lambda value: t(f"dataset_{value}", language),
+        key="dataset",
+    )
     minimum_year = 1950 if dataset == "era5_land" else 1940
     latest_full_year = date.today().year - 1
     start_year, end_year = st.sidebar.slider(
-        "Year range",
+        t("year_range", language),
         min_value=minimum_year,
         max_value=latest_full_year,
         value=(minimum_year, latest_full_year),
+        key="year_range",
     )
-    month_labels = ["Annual"] + list(calendar.month_name[1:])
-    month_label = st.sidebar.selectbox("Period", month_labels)
-    month = None if month_label == "Annual" else list(calendar.month_name).index(month_label)
+    month = st.sidebar.selectbox(
+        t("period", language),
+        [None, *range(1, 13)],
+        format_func=lambda value: month_name(language, value),
+        key="period",
+    )
+    month_label = month_name(language, month)
     temperature_options = {
-        "Mean (average daily mean)": ("temperature_mean", "mean"),
-        "Maximum (highest daily maximum)": ("temperature_max", "max"),
-        "Minimum (lowest daily minimum)": ("temperature_min", "min"),
+        "mean": ("temperature_mean", "mean"),
+        "max": ("temperature_max", "max"),
+        "min": ("temperature_min", "min"),
     }
-    temperature_label = st.sidebar.selectbox("Temperature measure", temperature_options)
-    temperature_column, aggregation = temperature_options[temperature_label]
-    short_temperature_label = temperature_label.split(" (")[0]
+    temperature_measure = st.sidebar.selectbox(
+        t("temperature_measure", language),
+        list(temperature_options),
+        format_func=lambda value: t(f"temp_option_{value}", language),
+        key="temperature_measure",
+    )
+    temperature_column, aggregation = temperature_options[temperature_measure]
+    short_temperature_label = t(f"temp_{temperature_measure}", language)
 
     if location is None:
-        st.info("Choose a valid location to begin.")
+        st.info(t("choose_location", language))
         return
 
     st.subheader(location.label)
     try:
         current = cached_current_weather(location.latitude, location.longitude)
-    except (WeatherApiError, ValueError) as exc:
-        st.warning(f"Current conditions are unavailable: {exc}")
+    except (WeatherApiError, ValueError):
+        st.warning(t("current_unavailable", language))
     else:
+        conditions = weather_description(language, current.weather_code)
         st.caption(
-            f"Current conditions · {current.description} · "
-            f"Updated {current.observed_at} ({current.timezone})"
+            f"{t('current_conditions', language)} · {conditions} · "
+            f"{t('updated', language, time=current.observed_at, timezone=current.timezone)}"
         )
         current_columns = st.columns(4)
-        current_columns[0].metric("Temperature", f"{current.temperature:.1f} °C")
-        current_columns[1].metric(
-            "Feels like", f"{current.apparent_temperature:.1f} °C"
+        current_columns[0].metric(
+            t("temperature", language),
+            t("temperature_value", language, value=current.temperature),
         )
-        current_columns[2].metric("Humidity", f"{current.relative_humidity}%")
-        current_columns[3].metric("Wind", f"{current.wind_speed:.1f} km/h")
+        current_columns[1].metric(
+            t("feels_like", language),
+            t("temperature_value", language, value=current.apparent_temperature),
+        )
+        current_columns[2].metric(
+            t("humidity", language),
+            t("humidity_value", language, value=current.relative_humidity),
+        )
+        current_columns[3].metric(
+            t("wind", language),
+            t("wind_value", language, value=current.wind_speed),
+        )
 
     st.divider()
-    st.subheader("Historical trends")
+    st.subheader(t("historical_trends", language))
     fetch_start_year = min(start_year, BASELINE_START)
     fetch_end_year = max(end_year, BASELINE_END)
     try:
-        with st.spinner("Loading historical weather data…"):
+        with st.spinner(t("loading_history", language)):
             daily, metadata = cached_weather(
                 location.latitude,
                 location.longitude,
@@ -234,52 +344,83 @@ def app() -> None:
         yearly = all_yearly[all_yearly["year"].between(start_year, end_year)].copy()
         trend = calculate_trend(yearly)
         yearly = add_fitted_trend(yearly, trend)
-    except (WeatherApiError, ValueError) as exc:
-        st.error(str(exc))
+    except (WeatherApiError, ValueError):
+        st.error(t("historical_unavailable", language))
         return
 
     st.caption(
-        f"Requested coordinates: {location.latitude:.4f}, {location.longitude:.4f} · "
-        f"Grid point: {metadata.get('latitude')}, {metadata.get('longitude')} · "
-        f"Timezone: {metadata.get('timezone')}"
+        t(
+            "coordinates_caption",
+            language,
+            latitude=location.latitude,
+            longitude=location.longitude,
+            grid_latitude=metadata.get("latitude"),
+            grid_longitude=metadata.get("longitude"),
+            timezone=metadata.get("timezone"),
+        )
     )
 
     metric_columns = st.columns(4)
-    metric_columns[0].metric("Trend", f"{trend.slope_per_decade:+.2f} °C/decade")
-    metric_columns[1].metric(
-        "95% confidence interval",
-        f"{trend.confidence_low:+.2f} to {trend.confidence_high:+.2f}",
+    metric_columns[0].metric(
+        t("trend", language),
+        t("trend_value", language, value=trend.slope_per_decade),
     )
-    metric_columns[2].metric("R²", f"{trend.r_squared:.3f}")
-    metric_columns[3].metric("p-value", f"{trend.p_value:.3g}")
+    metric_columns[1].metric(
+        t("confidence_interval", language),
+        t(
+            "confidence_value",
+            language,
+            low=trend.confidence_low,
+            high=trend.confidence_high,
+        ),
+    )
+    metric_columns[2].metric(t("r_squared", language), f"{trend.r_squared:.3f}")
+    metric_columns[3].metric(t("p_value", language), f"{trend.p_value:.3g}")
     st.caption(
-        f"1991–2020 {month_label.lower()} {short_temperature_label.lower()} "
-        f"temperature normal: {normal:.2f} °C"
+        t(
+            "normal_caption",
+            language,
+            period=month_label.lower(),
+            measure=short_temperature_label.lower(),
+            normal=normal,
+        )
     )
 
     trend_tab, anomaly_tab, daily_tab, data_tab = st.tabs(
-        ("Trend", "Anomalies", "Daily detail", "Data")
+        (
+            t("tab_trend", language),
+            t("tab_anomalies", language),
+            t("tab_daily", language),
+            t("tab_data", language),
+        )
     )
     with trend_tab:
         st.plotly_chart(
-            trend_chart(yearly, month_label, short_temperature_label), use_container_width=True
+            trend_chart(yearly, month_label, short_temperature_label, language),
+            use_container_width=True,
         )
     with anomaly_tab:
         st.plotly_chart(
-            anomaly_chart(yearly, month_label, short_temperature_label), use_container_width=True
+            anomaly_chart(yearly, month_label, short_temperature_label, language),
+            use_container_width=True,
         )
     with daily_tab:
         detail_year = st.select_slider(
-            "Detail year", options=list(range(start_year, end_year + 1)), value=end_year
+            t("detail_year", language),
+            options=list(range(start_year, end_year + 1)),
+            value=end_year,
+            key="detail_year",
         )
-        st.plotly_chart(daily_chart(daily, detail_year, month), use_container_width=True)
+        st.plotly_chart(
+            daily_chart(daily, detail_year, month, language), use_container_width=True
+        )
     with data_tab:
         visible_daily = daily[
             daily["date"].dt.year.between(start_year, end_year)
             & (True if month is None else daily["date"].dt.month == month)
         ]
         st.download_button(
-            "Download aggregated CSV",
+            t("download_aggregated", language),
             dataframe_to_csv_bytes(yearly),
             file_name=(
                 f"{dataset}_{month_label.lower()}_"
@@ -288,35 +429,27 @@ def app() -> None:
             mime="text/csv",
         )
         st.download_button(
-            "Download daily CSV",
+            t("download_daily", language),
             dataframe_to_csv_bytes(visible_daily),
             file_name=f"{dataset}_{month_label.lower()}_daily.csv",
             mime="text/csv",
         )
-        st.dataframe(yearly, use_container_width=True, hide_index=True)
-
-    with st.expander("Methodology and limitations"):
-        st.markdown(
-            """
-            Mean temperature is the average of daily means. Maximum temperature is the single
-            highest daily maximum in the selected month or year; minimum temperature is the single
-            lowest daily minimum. Only complete years or months are included. Anomalies use the
-            1991–2020 WMO climatological normal. The
-            displayed trend is ordinary least-squares regression; its confidence interval and
-            p-value describe statistical uncertainty, not physical causation.
-
-            ERA5 and ERA5-Land are gridded reanalysis estimates, not readings from a particular
-            weather station. A local trend can be consistent with broader climate warming, but this
-            dashboard alone cannot attribute that trend to greenhouse-gas emissions. Local land use,
-            natural variability, and the selected period can also affect results.
-            """
+        display_yearly = yearly.rename(
+            columns={
+                "year": t("year", language),
+                "temperature": t("column_temperature", language),
+                "days": t("column_days", language),
+                "anomaly": t("column_anomaly", language),
+                "fitted_temperature": t("column_fitted", language),
+            }
         )
+        st.dataframe(display_yearly, use_container_width=True, hide_index=True)
+
+    with st.expander(t("methodology_title", language)):
+        st.markdown(t("methodology", language))
 
     st.divider()
-    st.caption(
-        "Weather data: Open-Meteo and Copernicus Climate Change Service ERA5/ERA5-Land (CC BY 4.0). "
-        "Location search: GeoNames via Open-Meteo."
-    )
+    st.caption(t("attribution", language))
 
 
 if __name__ == "__main__":
