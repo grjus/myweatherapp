@@ -14,6 +14,7 @@ from scipy import stats
 
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 BASELINE_START = 1991
 BASELINE_END = 2020
 
@@ -47,6 +48,52 @@ class TrendStatistics:
     p_value: float
     r_squared: float
     intercept: float
+
+
+@dataclass(frozen=True)
+class CurrentWeather:
+    observed_at: str
+    temperature: float
+    apparent_temperature: float
+    relative_humidity: int
+    weather_code: int
+    wind_speed: float
+    is_day: bool
+    timezone: str
+
+    @property
+    def description(self) -> str:
+        descriptions = {
+            0: "Clear sky",
+            1: "Mainly clear",
+            2: "Partly cloudy",
+            3: "Overcast",
+            45: "Fog",
+            48: "Depositing rime fog",
+            51: "Light drizzle",
+            53: "Moderate drizzle",
+            55: "Dense drizzle",
+            56: "Light freezing drizzle",
+            57: "Dense freezing drizzle",
+            61: "Slight rain",
+            63: "Moderate rain",
+            65: "Heavy rain",
+            66: "Light freezing rain",
+            67: "Heavy freezing rain",
+            71: "Slight snowfall",
+            73: "Moderate snowfall",
+            75: "Heavy snowfall",
+            77: "Snow grains",
+            80: "Slight rain showers",
+            81: "Moderate rain showers",
+            82: "Violent rain showers",
+            85: "Slight snow showers",
+            86: "Heavy snow showers",
+            95: "Thunderstorm",
+            96: "Thunderstorm with slight hail",
+            99: "Thunderstorm with heavy hail",
+        }
+        return descriptions.get(self.weather_code, "Unknown conditions")
 
 
 def _get_json(
@@ -107,6 +154,48 @@ def search_locations(
         except (KeyError, TypeError, ValueError):
             continue
     return locations
+
+
+def fetch_current_weather(
+    latitude: float,
+    longitude: float,
+    *,
+    client: httpx.Client | None = None,
+) -> CurrentWeather:
+    """Fetch current modelled conditions for a coordinate pair."""
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise ValueError("Coordinates are outside valid latitude/longitude bounds.")
+
+    payload = _get_json(
+        FORECAST_URL,
+        {
+            "latitude": latitude,
+            "longitude": longitude,
+            "current": (
+                "temperature_2m,apparent_temperature,relative_humidity_2m,"
+                "weather_code,wind_speed_10m,is_day"
+            ),
+            "timezone": "auto",
+        },
+        client,
+    )
+    current = payload.get("current")
+    if not isinstance(current, dict):
+        raise WeatherApiError("Open-Meteo response did not contain current weather data.")
+
+    try:
+        return CurrentWeather(
+            observed_at=str(current["time"]),
+            temperature=float(current["temperature_2m"]),
+            apparent_temperature=float(current["apparent_temperature"]),
+            relative_humidity=int(current["relative_humidity_2m"]),
+            weather_code=int(current["weather_code"]),
+            wind_speed=float(current["wind_speed_10m"]),
+            is_day=bool(int(current["is_day"])),
+            timezone=str(payload.get("timezone", "auto")),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise WeatherApiError("Open-Meteo returned malformed current weather data.") from exc
 
 
 def _fetch_daily_weather_range(

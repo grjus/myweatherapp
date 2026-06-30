@@ -13,6 +13,7 @@ from weather import (
     aggregate_yearly,
     calculate_trend,
     dataframe_to_csv_bytes,
+    fetch_current_weather,
     fetch_daily_weather,
     search_locations,
 )
@@ -64,6 +65,43 @@ def test_search_locations_handles_empty_and_short_queries() -> None:
 
     with mock_client(lambda _: httpx.Response(200, json={})) as client:
         assert search_locations("missing", client=client) == []
+
+
+def test_fetch_current_weather_builds_query_and_normalizes_conditions() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.open-meteo.com"
+        assert request.url.params["timezone"] == "auto"
+        assert "apparent_temperature" in request.url.params["current"]
+        return httpx.Response(
+            200,
+            json={
+                "timezone": "Europe/Warsaw",
+                "current": {
+                    "time": "2026-06-30T14:15",
+                    "temperature_2m": 24.3,
+                    "apparent_temperature": 25.1,
+                    "relative_humidity_2m": 58,
+                    "weather_code": 2,
+                    "wind_speed_10m": 11.7,
+                    "is_day": 1,
+                },
+            },
+        )
+
+    with mock_client(handler) as client:
+        current = fetch_current_weather(52.2298, 21.0118, client=client)
+
+    assert current.temperature == pytest.approx(24.3)
+    assert current.relative_humidity == 58
+    assert current.description == "Partly cloudy"
+    assert current.is_day is True
+    assert current.timezone == "Europe/Warsaw"
+
+
+def test_fetch_current_weather_rejects_malformed_response() -> None:
+    with mock_client(lambda _: httpx.Response(200, json={"current": {}})) as client:
+        with pytest.raises(WeatherApiError, match="malformed current weather"):
+            fetch_current_weather(52.2298, 21.0118, client=client)
 
 
 def test_fetch_daily_weather_builds_query_and_normalizes_data() -> None:

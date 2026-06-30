@@ -16,7 +16,8 @@ uv run streamlit run main.py
 Then open the local URL printed by Streamlit. Search for a city or postal code, or enter coordinates
 directly. Choose ERA5-Land for finer-resolution land data since 1950, or ERA5 for global data since
 1940. Select mean, peak maximum, or lowest minimum temperature and an annual or calendar-month
-analysis.
+analysis. The dashboard also shows current temperature, apparent temperature, humidity, wind, and
+weather conditions for the selected location.
 
 ## What the dashboard calculates
 

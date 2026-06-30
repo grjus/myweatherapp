@@ -15,12 +15,14 @@ import weather as weather_module
 from weather import (
     BASELINE_END,
     BASELINE_START,
+    CurrentWeather,
     Location,
     WeatherApiError,
     add_anomalies,
     add_fitted_trend,
     calculate_trend,
     dataframe_to_csv_bytes,
+    fetch_current_weather,
     fetch_daily_weather,
     search_locations,
 )
@@ -42,6 +44,11 @@ def aggregate_temperature(
 @st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
 def cached_location_search(query: str) -> list[Location]:
     return search_locations(query)
+
+
+@st.cache_data(ttl=10 * 60, max_entries=500, show_spinner=False)
+def cached_current_weather(latitude: float, longitude: float) -> CurrentWeather:
+    return fetch_current_weather(latitude, longitude)
 
 
 @st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
@@ -189,6 +196,26 @@ def app() -> None:
         st.info("Choose a valid location to begin.")
         return
 
+    st.subheader(location.label)
+    try:
+        current = cached_current_weather(location.latitude, location.longitude)
+    except (WeatherApiError, ValueError) as exc:
+        st.warning(f"Current conditions are unavailable: {exc}")
+    else:
+        st.caption(
+            f"Current conditions · {current.description} · "
+            f"Updated {current.observed_at} ({current.timezone})"
+        )
+        current_columns = st.columns(4)
+        current_columns[0].metric("Temperature", f"{current.temperature:.1f} °C")
+        current_columns[1].metric(
+            "Feels like", f"{current.apparent_temperature:.1f} °C"
+        )
+        current_columns[2].metric("Humidity", f"{current.relative_humidity}%")
+        current_columns[3].metric("Wind", f"{current.wind_speed:.1f} km/h")
+
+    st.divider()
+    st.subheader("Historical trends")
     fetch_start_year = min(start_year, BASELINE_START)
     fetch_end_year = max(end_year, BASELINE_END)
     try:
@@ -211,7 +238,6 @@ def app() -> None:
         st.error(str(exc))
         return
 
-    st.subheader(location.label)
     st.caption(
         f"Requested coordinates: {location.latitude:.4f}, {location.longitude:.4f} · "
         f"Grid point: {metadata.get('latitude')}, {metadata.get('longitude')} · "
