@@ -71,6 +71,104 @@ def test_language_is_initialized_from_url_and_mirrored_after_selection() -> None
         main_module.cached_location_search = original_search
 
 
+def test_analysis_options_are_initialized_from_and_written_to_url() -> None:
+    original_search = main_module.cached_location_search
+    source = (
+        "import main\n"
+        "main.cached_location_search = lambda query, language: []\n"
+        "main.app()"
+    )
+    try:
+        app = AppTest.from_string(source)
+        app.query_params.update(
+            {
+                "lang": "pl",
+                "q": "Gdańsk",
+                "dataset": "era5",
+                "start": "1980",
+                "end": "2020",
+                "period": "7",
+                "measure": "max",
+            }
+        )
+
+        app.run()
+
+        assert app.sidebar.text_input[0].value == "Gdańsk"
+        assert app.sidebar.selectbox[0].value == "era5"
+        assert app.sidebar.slider[0].value == (1980, 2020)
+        assert app.sidebar.selectbox[1].value == 7
+        assert app.sidebar.selectbox[2].value == "max"
+
+        app.sidebar.selectbox[2].set_value("min").run()
+
+        assert app.query_params["measure"] == ["min"]
+        assert app.query_params["start"] == ["1980"]
+        assert app.query_params["end"] == ["2020"]
+    finally:
+        main_module.cached_location_search = original_search
+
+
+def test_manual_coordinates_are_restored_from_url() -> None:
+    original_current = main_module.cached_current_weather
+    original_history = main_module.cached_weather
+    source = (
+        "import main\n"
+        "def unavailable(*args, **kwargs):\n"
+        "    raise main.WeatherApiError('unavailable')\n"
+        "main.cached_current_weather = unavailable\n"
+        "main.cached_weather = unavailable\n"
+        "main.app()"
+    )
+    try:
+        app = AppTest.from_string(source)
+        app.query_params.update(
+            {"mode": "manual", "lat": "50.0614", "lon": "19.9366"}
+        )
+
+        app.run()
+
+        assert app.sidebar.toggle[0].value is True
+        assert app.sidebar.number_input[0].value == pytest.approx(50.0614)
+        assert app.sidebar.number_input[1].value == pytest.approx(19.9366)
+        assert app.query_params["lat"] == ["50.0614"]
+        assert app.query_params["lon"] == ["19.9366"]
+    finally:
+        main_module.cached_current_weather = original_current
+        main_module.cached_weather = original_history
+
+
+def test_matching_location_is_restored_from_url_coordinates() -> None:
+    original_search = main_module.cached_location_search
+    original_current = main_module.cached_current_weather
+    original_history = main_module.cached_weather
+    source = (
+        "import main\n"
+        "main.cached_location_search = lambda query, language: [\n"
+        "    main.Location('Warsaw', 52.2298, 21.0118),\n"
+        "    main.Location('Krakow', 50.0614, 19.9366),\n"
+        "]\n"
+        "def unavailable(*args, **kwargs):\n"
+        "    raise main.WeatherApiError('unavailable')\n"
+        "main.cached_current_weather = unavailable\n"
+        "main.cached_weather = unavailable\n"
+        "main.app()"
+    )
+    try:
+        app = AppTest.from_string(source)
+        app.query_params.update({"q": "Poland", "loc": "50.06140,19.93660"})
+
+        app.run()
+
+        selected = app.sidebar.selectbox[0].value
+        assert selected.name == "Krakow"
+        assert app.query_params["loc"] == ["50.06140,19.93660"]
+    finally:
+        main_module.cached_location_search = original_search
+        main_module.cached_current_weather = original_current
+        main_module.cached_weather = original_history
+
+
 def test_cached_location_search_supports_legacy_search_signature(monkeypatch) -> None:
     expected = [main_module.Location("Warsaw", 52.2298, 21.0118)]
 

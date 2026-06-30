@@ -85,14 +85,57 @@ def initialize_language() -> Language:
     return language
 
 
-def mirror_language_to_url(language: Language) -> None:
-    """Keep the selected language shareable in the page URL."""
-    query_value = language.lower()
-    current_value = st.query_params.get("lang")
-    if isinstance(current_value, list):
-        current_value = current_value[-1] if current_value else None
-    if current_value != query_value:
-        st.query_params["lang"] = query_value
+def query_value(name: str) -> str | None:
+    """Return the last scalar value for a query parameter."""
+    value = st.query_params.get(name)
+    if isinstance(value, list):
+        return value[-1] if value else None
+    return str(value) if value is not None else None
+
+
+def query_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(query_value(name) or default)
+    except ValueError:
+        return default
+    return value if minimum <= value <= maximum else default
+
+
+def query_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(query_value(name) or default)
+    except ValueError:
+        return default
+    return value if minimum <= value <= maximum else default
+
+
+def mirror_options_to_url(
+    language: Language,
+    location: Location | None,
+    dataset: str,
+    start_year: int,
+    end_year: int,
+    month: int | None,
+    temperature_measure: str,
+) -> None:
+    """Replace query parameters with the current shareable dashboard state."""
+    parameters = {
+        "lang": language.lower(),
+        "mode": "manual" if st.session_state.manual_coordinates else "search",
+        "dataset": dataset,
+        "start": str(start_year),
+        "end": str(end_year),
+        "period": "annual" if month is None else str(month),
+        "measure": temperature_measure,
+    }
+    if st.session_state.manual_coordinates:
+        parameters["lat"] = f"{st.session_state.latitude:.4f}"
+        parameters["lon"] = f"{st.session_state.longitude:.4f}"
+    else:
+        parameters["q"] = st.session_state.location_query
+        if location is not None:
+            parameters["loc"] = f"{location.latitude:.5f},{location.longitude:.5f}"
+    st.query_params.from_dict(parameters)
 
 
 def trend_chart(
@@ -195,15 +238,20 @@ def daily_chart(
 
 def resolve_location(language: Language) -> Location | None:
     st.sidebar.subheader(t("location", language))
+    if "manual_coordinates" not in st.session_state:
+        st.session_state.manual_coordinates = query_value("mode") == "manual"
     manual = st.sidebar.toggle(
         t("manual_coordinates", language), key="manual_coordinates"
     )
     if manual:
+        if "latitude" not in st.session_state:
+            st.session_state.latitude = query_float("lat", 52.2298, -90, 90)
+        if "longitude" not in st.session_state:
+            st.session_state.longitude = query_float("lon", 21.0118, -180, 180)
         latitude = st.sidebar.number_input(
             t("latitude", language),
             -90.0,
             90.0,
-            52.2298,
             format="%.4f",
             key="latitude",
         )
@@ -211,15 +259,17 @@ def resolve_location(language: Language) -> Location | None:
             t("longitude", language),
             -180.0,
             180.0,
-            21.0118,
             format="%.4f",
             key="longitude",
         )
         return Location(t("custom_location", language), latitude, longitude)
 
+    if "location_query" not in st.session_state:
+        st.session_state.location_query = query_value("q") or t(
+            "default_location_query", language
+        )
     query = st.sidebar.text_input(
         t("city_search", language),
-        value=t("default_location_query", language),
         key="location_query",
     )
     try:
@@ -233,6 +283,22 @@ def resolve_location(language: Language) -> Location | None:
     if not results:
         st.sidebar.warning(t("no_location", language))
         return None
+    if st.session_state.get("matching_location") not in results:
+        selected_coordinates = query_value("loc")
+        selected = results[0]
+        if selected_coordinates:
+            try:
+                latitude_text, longitude_text = selected_coordinates.split(",", 1)
+                latitude = float(latitude_text)
+                longitude = float(longitude_text)
+                selected = min(
+                    results,
+                    key=lambda item: abs(item.latitude - latitude)
+                    + abs(item.longitude - longitude),
+                )
+            except ValueError:
+                pass
+        st.session_state.matching_location = selected
     return st.sidebar.selectbox(
         t("matching_location", language),
         results,
@@ -252,12 +318,18 @@ def app() -> None:
         width="stretch",
     )
     language = cast(Language, selected_language or language)
-    mirror_language_to_url(language)
     title_column.title(t("title", language))
     st.caption(t("subtitle", language))
 
     location = resolve_location(language)
     st.sidebar.subheader(t("analysis", language))
+    if "dataset" not in st.session_state:
+        requested_dataset = query_value("dataset")
+        st.session_state.dataset = (
+            requested_dataset
+            if requested_dataset in ("era5_land", "era5")
+            else "era5_land"
+        )
     dataset = st.sidebar.selectbox(
         t("dataset", language),
         ("era5_land", "era5"),
@@ -266,13 +338,30 @@ def app() -> None:
     )
     minimum_year = 1950 if dataset == "era5_land" else 1940
     latest_full_year = date.today().year - 1
+    if "year_range" not in st.session_state:
+        start = query_int("start", minimum_year, minimum_year, latest_full_year)
+        end = query_int("end", latest_full_year, minimum_year, latest_full_year)
+        st.session_state.year_range = (min(start, end), max(start, end))
+    else:
+        start, end = st.session_state.year_range
+        st.session_state.year_range = (
+            max(minimum_year, min(start, latest_full_year)),
+            max(minimum_year, min(end, latest_full_year)),
+        )
     start_year, end_year = st.sidebar.slider(
         t("year_range", language),
         min_value=minimum_year,
         max_value=latest_full_year,
-        value=(minimum_year, latest_full_year),
         key="year_range",
     )
+    if "period" not in st.session_state:
+        requested_period = query_value("period")
+        st.session_state.period = (
+            int(requested_period)
+            if requested_period and requested_period.isdigit()
+            and 1 <= int(requested_period) <= 12
+            else None
+        )
     month = st.sidebar.selectbox(
         t("period", language),
         [None, *range(1, 13)],
@@ -285,6 +374,11 @@ def app() -> None:
         "max": ("temperature_max", "max"),
         "min": ("temperature_min", "min"),
     }
+    if "temperature_measure" not in st.session_state:
+        requested_measure = query_value("measure")
+        st.session_state.temperature_measure = (
+            requested_measure if requested_measure in temperature_options else "mean"
+        )
     temperature_measure = st.sidebar.selectbox(
         t("temperature_measure", language),
         list(temperature_options),
@@ -293,6 +387,16 @@ def app() -> None:
     )
     temperature_column, aggregation = temperature_options[temperature_measure]
     short_temperature_label = t(f"temp_{temperature_measure}", language)
+
+    mirror_options_to_url(
+        language,
+        location,
+        dataset,
+        start_year,
+        end_year,
+        month,
+        temperature_measure,
+    )
 
     if location is None:
         st.info(t("choose_location", language))

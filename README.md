@@ -18,8 +18,9 @@ directly. Choose ERA5-Land for finer-resolution land data since 1950, or ERA5 fo
 1940. Select mean, peak maximum, or lowest minimum temperature and an annual or calendar-month
 analysis. The dashboard also shows current temperature, apparent temperature, humidity, wind, and
 weather conditions for the selected location. Use the header control to switch between English and
-Polish; the selection is retained in the session and reflected in the shareable `?lang=en` or
-`?lang=pl` URL parameter. Translation catalogs are stored in `locales/`.
+Polish. Language, location, dataset, year range, period, and temperature measure are retained in the
+URL, so copying it preserves the selected dashboard state. Translation catalogs are stored in
+`locales/`.
 
 ## What the dashboard calculates
 
